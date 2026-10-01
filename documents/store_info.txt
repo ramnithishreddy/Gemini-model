@@ -1,0 +1,11 @@
+Retail Store Information
+
+Our store has multiple sections for groceries, personal care, home care, electronics and clothing.
+
+The grocery section is located near the main entrance.
+
+The personal care section is located next to the grocery section.
+
+Customers can ask store staff for assistance in locating products.
+
+Store timings are from 9:00 AM to 10:00 PM.

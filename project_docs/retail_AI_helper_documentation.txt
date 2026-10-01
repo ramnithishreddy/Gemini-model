@@ -1,0 +1,784 @@
+Retail AI Helper
+Complete Technical Documentation
+Architecture • RAG • Embeddings • Persistent Vector Store • FastAPI • React
+
+Purpose: This document records how the Retail AI Helper was designed and implemented, why each layer exists, how the components communicate, how data flows through the system, how the project was tested, and what the next development stages are.
+1. 1. Project Overview
+The Retail AI Helper is a retrieval-augmented generation (RAG) application for a retail store. It allows a user to ask natural-language questions about store information and receive answers grounded in the store's own documents.
+The project was intentionally built incrementally. The first objective was to understand the fundamentals of Gemini, embeddings, document ingestion, semantic search, and RAG before adding a web API and frontend.
+2. 2. Goals of the System
+Allow customers or staff to ask natural-language retail questions.
+Use store-provided documents as the knowledge source rather than relying only on the model's general knowledge.
+Retrieve the most relevant document chunks for each question.
+Give Gemini only the relevant retrieved context and instruct it not to invent information.
+Persist document embeddings so they do not have to be regenerated for every question.
+Expose the RAG system through a FastAPI backend.
+Provide a React/Vite chat interface for users.
+Return both the generated answer and the retrieved source documents.
+3. 3. High-Level Architecture
+                         ┌──────────────────────────┐
+                         │       React / Vite       │
+                         │      Chat Interface      │
+                         └────────────┬─────────────┘
+                                      │
+                               POST /chat
+                                      │
+                                      ▼
+                         ┌──────────────────────────┐
+                         │         FastAPI          │
+                         │       /chat endpoint     │
+                         └────────────┬─────────────┘
+                                      │
+                                      ▼
+                         ┌──────────────────────────┐
+                         │       RAG Pipeline       │
+                         │      rag_pipeline.py     │
+                         └────────────┬─────────────┘
+                                      │
+                         ┌────────────┴────────────┐
+                         │                         │
+                         ▼                         ▼
+                ┌─────────────────┐       ┌─────────────────┐
+                │ Persistent      │       │ Gemini          │
+                │ Vector Store    │       │ Embedding API   │
+                │ store.json      │       │ Query embedding │
+                └────────┬────────┘       └────────┬────────┘
+                         │                         │
+                         └────────────┬────────────┘
+                                      ▼
+                              Similarity Search
+                                      │
+                                      ▼
+                              Relevant Chunks
+                                      │
+                                      ▼
+                              Gemini Generation
+                                      │
+                                      ▼
+                              Answer + Sources
+                                      │
+                                      ▼
+                                  React UI
+4. 4. Technology Stack
+Layer
+Technology
+Purpose
+Frontend
+React
+Build the chat interface.
+Frontend tooling
+Vite
+Development server and React project tooling.
+Backend
+Python + FastAPI
+Expose the AI functionality through HTTP APIs.
+API server
+Uvicorn
+Run the FastAPI application.
+AI generation
+Google Gemini
+Generate answers from retrieved context.
+Embeddings
+gemini-embedding-001
+Convert text into numerical vectors.
+Vector search
+NumPy + cosine similarity
+Compare query and document embeddings.
+Persistent storage
+JSON file
+Persist chunks and embeddings during the learning/POC stage.
+Configuration
+python-dotenv / .env
+Load the Gemini API key.
+
+5. 5. Project Structure
+Gemini model/
+│
+├── documents/
+│   ├── product_faq.txt
+│   ├── return_policy.txt
+│   └── store_info.txt
+│
+├── ingestion/
+│   ├── __init__.py
+│   ├── loader.py
+│   ├── cleaner.py
+│   ├── chunker.py
+│   ├── embedder.py
+│   ├── ingest.py
+│   ├── build_vector_store.py
+│   └── test_embeddings_pipeline.py
+│
+├── rag/
+│   ├── similarity.py
+│   ├── vector_store.py
+│   ├── rag_pipeline.py
+│   └── test_rag.py
+│
+├── api/
+│   └── routes.py
+│
+├── vector_store/
+│   └── store.json
+│
+├── main.py
+├── .env
+└── requirements.txt
+
+retail-ai-ui/
+├── src/
+│   ├── App.jsx
+│   ├── App.css
+│   └── main.jsx
+├── package.json
+└── ...
+6. 6. Gemini Setup
+The project uses the Google GenAI Python SDK. The API key is loaded from an environment file rather than being hard-coded in application source code.
+from google import genai
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+
+client = genai.Client(
+    api_key=os.environ["GEMINI_API_KEY"]
+)
+The project initially used an unavailable Gemini model identifier and then moved to the working model identifier used in the project: gemini-3.6-flash. The embedding model used for semantic retrieval is gemini-embedding-001.
+7. 7. Initial Gemini Test
+Before building RAG, Gemini was tested independently. The purpose was to verify that the API key, SDK, client initialization, and generation request were working.
+The test succeeded and returned a normal Gemini response. A warning about direct use of automatic function calling (AFC) appeared in the SDK output. This did not prevent generation and was treated as a warning rather than an application failure.
+8. 8. Embeddings
+An embedding converts text into a high-dimensional numerical representation. Texts with similar semantic meaning can have vectors that are closer to each other than unrelated texts.
+The project successfully tested gemini-embedding-001 and observed 3072-dimensional vectors.
+def create_embedding(text):
+    response = client.models.embed_content(
+        model="gemini-embedding-001",
+        contents=text
+    )
+    return response.embeddings[0].values
+A transient 503 UNAVAILABLE error was encountered during embedding work. A retry wrapper was added as a reliability improvement so temporary API failures can be retried before failing.
+9. 9. Source Documents
+The initial knowledge base contains three plain-text documents. They demonstrate three kinds of retail knowledge: product location, return policy, and store information.
+Document
+Knowledge represented
+product_faq.txt
+Basmati rice, Aashirvaad atta, Surf Excel, Dove shampoo and their store sections.
+return_policy.txt
+7-day eligible returns, original invoice/bill, unused/original packaging, damaged-product reporting and refund method.
+store_info.txt
+Store sections, grocery location, personal-care location, staff assistance and 9 AM–10 PM timings.
+
+10. 10. Document Ingestion Pipeline
+Document ingestion converts raw source files into clean, searchable chunks. The pipeline is separated into loading, cleaning, chunking, and embedding so each responsibility is easy to test.
+documents
+   ↓
+loader
+   ↓
+cleaner
+   ↓
+chunker
+   ↓
+chunks
+   ↓
+embedder
+   ↓
+vectors
+   ↓
+persistent vector store
+11. Document Loader
+loader.py reads supported text files from the documents directory and returns metadata including the source filename, path, and text.
+from pathlib import Path
+
+SUPPORTED_EXTENSIONS = {
+    ".txt"
+}
+
+def load_text_file(file_path):
+    path = Path(file_path)
+    with open(path, "r", encoding="utf-8") as file:
+        return file.read()
+
+def load_documents(directory="documents"):
+    documents = []
+    directory_path = Path(directory)
+
+    for file_path in directory_path.iterdir():
+        if file_path.suffix.lower() not in SUPPORTED_EXTENSIONS:
+            continue
+
+        text = load_text_file(file_path)
+
+        documents.append({
+            "source": file_path.name,
+            "path": str(file_path),
+            "text": text
+        })
+
+    return documents
+12. Text Cleaning
+cleaner.py removes unnecessary spacing and normalizes blank lines before chunking.
+import re
+
+def clean_text(text):
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n\s*\n+", "\n\n", text)
+    text = text.strip()
+    return text
+13. Chunking
+Chunking divides long documents into smaller pieces. The current learning implementation uses a word-based chunk size of 500 words and an overlap of 100 words.
+def chunk_text(text, chunk_size=500, overlap=100):
+    words = text.split()
+    chunks = []
+    start = 0
+
+    while start < len(words):
+        end = start + chunk_size
+        chunk = " ".join(words[start:end])
+        chunks.append(chunk)
+        start += chunk_size - overlap
+
+    return chunks
+The overlap helps preserve context across chunk boundaries when documents become longer. With the current small sample documents, each source produced one chunk.
+14. Ingestion Output
+Running the ingestion process successfully produced three chunks: one from each of the three source documents. Each chunk keeps a chunk_id, source filename, chunk index, and text.
+chunk_id: product_faq.txt_chunk_0
+source: product_faq.txt
+
+chunk_id: return_policy.txt_chunk_0
+source: return_policy.txt
+
+chunk_id: store_info.txt_chunk_0
+source: store_info.txt
+11. 15. Embedding Pipeline
+After chunking, every chunk is sent to gemini-embedding-001. The resulting vector is attached to the chunk before persistence.
+for chunk in chunks:
+    chunk["embedding"] = create_embedding(chunk["text"])
+The successful test showed 3072 dimensions for the generated embeddings.
+12. 16. Semantic Search
+The system uses cosine similarity to compare the user's question embedding with stored document embeddings. A higher cosine similarity means the vectors are more aligned in the embedding space.
+import numpy as np
+
+def cosine_similarity(vector_a, vector_b):
+    vector_a = np.array(vector_a)
+    vector_b = np.array(vector_b)
+
+    dot_product = np.dot(vector_a, vector_b)
+
+    magnitude_a = np.linalg.norm(vector_a)
+    magnitude_b = np.linalg.norm(vector_b)
+
+    return dot_product / (magnitude_a * magnitude_b)
+13. 17. Retrieval Test
+For the test question 'Where can I find basmati rice?', semantic retrieval returned the following ordering and scores:
+Source
+Similarity
+product_faq.txt
+0.6881
+store_info.txt
+0.5807
+return_policy.txt
+0.4972
+
+The product FAQ ranked first because it directly states that Basmati rice is in the grocery section. Store information ranked second because it states where the grocery section is located.
+14. 18. Basic RAG Pipeline
+RAG means Retrieval-Augmented Generation. Instead of asking Gemini to answer entirely from its general model knowledge, the application first retrieves relevant project/store information and places that information in the generation prompt.
+User question
+     ↓
+Create question embedding
+     ↓
+Compare with stored document embeddings
+     ↓
+Sort by similarity
+     ↓
+Take top_k chunks
+     ↓
+Build context
+     ↓
+Send context + question to Gemini
+     ↓
+Generate grounded answer
+19. RAG Retrieval Code
+def retrieve(question, top_k=2):
+    chunks = load_vectors()
+
+    question_embedding = create_embedding(question)
+
+    results = []
+
+    for chunk in chunks:
+        score = cosine_similarity(
+            question_embedding,
+            chunk["embedding"]
+        )
+
+        results.append({
+            "source": chunk["source"],
+            "text": chunk["text"],
+            "score": score
+        })
+
+    results.sort(
+        key=lambda item: item["score"],
+        reverse=True
+    )
+
+    return results[:top_k]
+20. RAG Generation Prompt
+The generation prompt instructs Gemini to use only retrieved context, avoid inventing facts, and state when the context is insufficient.
+You are a helpful AI assistant for a retail store.
+
+Answer the user's question using ONLY the information provided in the context.
+
+Rules:
+- Do not invent information.
+- Do not assume information that is not in the context.
+- If the context does not contain the answer,
+  say that you don't have enough information.
+- Give a concise answer.
+- Do not mention filenames or sources in your answer.
+
+CONTEXT:
+{context}
+
+USER QUESTION:
+{question}
+15. 21. Persistent Vector Storage
+The first RAG implementation generated embeddings for all source chunks every time a question was asked. That is acceptable for learning but inefficient for an application.
+Persistent storage changes the architecture so document embeddings are generated during ingestion and saved. At query time, only the user's question needs a fresh embedding.
+BEFORE:
+
+Question
+  ↓
+Load documents
+  ↓
+Chunk documents
+  ↓
+Embed every document
+  ↓
+Search
+  ↓
+Gemini
+
+
+AFTER:
+
+ONE-TIME INGESTION
+Documents → chunks → embeddings → vector_store/store.json
+
+EVERY QUESTION
+Question → query embedding → load stored vectors → similarity search → Gemini
+22. Persistent Store Implementation
+import json
+from pathlib import Path
+
+STORE_PATH = Path("vector_store/store.json")
+
+def save_vectors(chunks):
+    STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    data = []
+
+    for chunk in chunks:
+        data.append({
+            "chunk_id": chunk["chunk_id"],
+            "source": chunk["source"],
+            "chunk_index": chunk["chunk_index"],
+            "text": chunk["text"],
+            "embedding": chunk["embedding"]
+        })
+
+    with open(STORE_PATH, "w", encoding="utf-8") as file:
+        json.dump(data, file)
+
+def load_vectors():
+    if not STORE_PATH.exists():
+        raise FileNotFoundError(
+            "Vector store not found. Run the ingestion pipeline first."
+        )
+
+    with open(STORE_PATH, "r", encoding="utf-8") as file:
+        return json.load(file)
+23. Building the Persistent Store
+python -m ingestion.build_vector_store
+This process loads the source documents, chunks them, creates embeddings, attaches embeddings to the chunks, and writes them to vector_store/store.json.
+24. Persistence Verification
+Persistence was verified by temporarily renaming the original documents directory and then running the RAG test. The application still returned the correct Basmati-rice answer and the same retrieved sources. This demonstrated that the query was using the persisted vector store rather than reading the original documents during the query.
+16. 25. Why the Vector Store Is Separate from Conversation History
+The vector store represents application knowledge: product FAQs, policies, store information, and future project documentation. Conversation history is different: it represents user/assistant messages from a particular chat session.
+Data
+Recommended role
+Store/product/policy documents
+RAG knowledge base / vector store
+User questions and AI answers
+Conversation database
+Product price, stock, SKU
+Structured database such as PostgreSQL
+Project documentation
+RAG knowledge base, optionally with metadata/category
+
+17. 26. FastAPI Backend
+FastAPI was added so the RAG pipeline no longer needs to be executed by directly running a test file for every user question. The API exposes a stable HTTP interface that the React frontend can call.
+The backend is started with one command:
+python -m uvicorn main:app --reload
+27. FastAPI Main Application
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from api.routes import router
+
+app = FastAPI(
+    title="Retail AI Helper",
+    description="RAG-based retail assistant",
+    version="1.0.0",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(router)
+
+@app.get("/")
+def root():
+    return {
+        "message": "Retail AI Helper API is running"
+    }
+
+@app.get("/health")
+def health():
+    return {
+        "status": "healthy"
+    }
+28. Chat API Endpoint
+from fastapi import APIRouter
+from pydantic import BaseModel
+
+from rag.rag_pipeline import ask
+
+router = APIRouter()
+
+class ChatRequest(BaseModel):
+    message: str
+
+@router.post("/chat")
+def chat(request: ChatRequest):
+    answer, sources = ask(request.message)
+
+    return {
+        "answer": answer,
+        "sources": [
+            {
+                "source": source["source"],
+                "similarity": source["score"]
+            }
+            for source in sources
+        ]
+    }
+29. API Request and Response
+Example request:
+POST /chat
+
+{
+    "message": "Where can I find basmati rice?"
+}
+Example response:
+{
+    "answer": "You can find Basmati rice in the grocery section, which is located near the main entrance of the store.",
+    "sources": [
+        {
+            "source": "product_faq.txt",
+            "similarity": 0.6881
+        },
+        {
+            "source": "store_info.txt",
+            "similarity": 0.5807
+        }
+    ]
+}
+18. 30. CORS and the Browser
+The React application runs on localhost:5173 while FastAPI runs on 127.0.0.1:8000. Because these are different browser origins, FastAPI must explicitly allow the frontend origin. The CORSMiddleware configuration handles the browser's OPTIONS preflight request and allows the subsequent POST /chat request.
+An initial OPTIONS /chat 405 error occurred because the CORS configuration was missing or not active. After adding CORSMiddleware and restarting FastAPI, the frontend was able to receive the response.
+19. 31. React Frontend
+The frontend was created using Vite with React. The UI contains a header, welcome screen, suggestion buttons, message history, source display, loading state, and a chat input.
+npm.cmd create vite@latest retail-ai-ui -- --template react
+cd retail-ai-ui
+npm.cmd install
+npm.cmd run dev
+The Windows PowerShell environment initially blocked npm.ps1 because script execution was disabled. Using npm.cmd allowed the Vite project to be created without changing the PowerShell execution policy.
+32. React-to-FastAPI Communication
+const response = await fetch("http://127.0.0.1:8000/chat", {
+    method: "POST",
+    headers: {
+        "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+        message: question,
+    }),
+});
+
+const data = await response.json();
+The React interface displays the returned answer and separately displays the source filenames. This keeps the response content and retrieval metadata separate in the UI.
+20. 33. Current End-to-End Data Flow
+USER
+ │
+ ▼
+React Chat UI
+ │
+ │ POST /chat
+ ▼
+FastAPI
+ │
+ ▼
+rag_pipeline.ask()
+ │
+ ├── load_vectors()
+ │       │
+ │       └── vector_store/store.json
+ │
+ ├── create_embedding(question)
+ │
+ ├── cosine_similarity()
+ │
+ ├── select top-k chunks
+ │
+ └── Gemini generate_content()
+ │
+ ▼
+JSON response
+ │
+ ├── answer
+ └── sources
+ │
+ ▼
+React
+ │
+ ├── AI answer
+ └── Sources
+21. 34. What Is Run Manually and What Is Not
+Command/process
+When it is used
+python -m ingestion.build_vector_store
+When documents are added or changed and the persistent vector store needs to be rebuilt.
+python -m rag.test_rag
+Development/testing of the RAG pipeline; not required for normal application use.
+python -m uvicorn main:app --reload
+Starts the FastAPI backend for the application.
+npm.cmd run dev
+Starts the React/Vite frontend during development.
+
+The individual test files remain useful for development, but users do not need to run every Python file. The application uses FastAPI as the backend entry point.
+22. 35. Testing Performed
+Gemini generation was tested independently.
+Gemini embeddings were tested successfully.
+Document loading, cleaning, and chunking were tested.
+Three document chunks were successfully produced.
+Semantic search was tested with similarity scores.
+The complete RAG pipeline was tested successfully.
+Persistent vector storage was created successfully.
+Persistence was verified by temporarily making the source documents unavailable to the query process.
+FastAPI /chat was tested successfully.
+React was connected to FastAPI successfully.
+A CORS preflight issue was encountered and fixed.
+The final React UI received the grounded Basmati-rice answer and displayed the retrieved sources.
+23. 36. Example Successful Question
+Question:
+Where can I find basmati rice?
+Retrieved context:
+product_faq.txt: Basmati rice is available in the grocery section.
+store_info.txt: The grocery section is located near the main entrance.
+Final answer shown by the application:
+You can find Basmati rice in the grocery section, which is located near the main entrance of the store.
+24. 37. Adding New Documentation to the AI
+The same ingestion architecture can be used for a project documentation file explaining how the Retail AI Helper was created. For example:
+documents/
+├── product_faq.txt
+├── return_policy.txt
+├── store_info.txt
+└── retail_ai_helper_documentation.txt
+After adding the file, rebuild the vector store. The new chunks become retrievable like the existing documents. This means the assistant can answer project-architecture questions as well as store-information questions.
+For a larger application, metadata such as category can distinguish store knowledge from project documentation.
+25. 38. Current Limitations
+The persistent vector store is a JSON file and is intended for learning/POC use, not large-scale production workloads.
+The current chunker is word-based and does not yet use document structure such as headings or sections.
+Only .txt documents are currently supported by the loader.
+There is no PostgreSQL database yet for conversations.
+The current RAG pipeline retrieves by cosine similarity without a dedicated reranking stage.
+There is no authentication or user account system.
+There are no product/inventory tools yet.
+The application currently uses local development servers.
+26. 39. Production-Oriented Future Architecture
+                         React
+                           │
+                           ▼
+                       FastAPI
+                           │
+             ┌─────────────┼──────────────┐
+             │             │              │
+             ▼             ▼              ▼
+       Conversation     RAG Search      Tools
+       PostgreSQL       Vector DB       / APIs
+                           │              │
+                           ▼              ▼
+                       Documents       Product DB
+                           │
+                           └──────┬───────┘
+                                  ▼
+                                Gemini
+                                  │
+                                  ▼
+                               Answer
+A production version can move the simple JSON vector store to a dedicated vector database such as Qdrant, pgvector, or another suitable vector store. Conversation data can be stored in PostgreSQL. Structured retail facts such as SKU, price, and inventory should generally be handled through structured database queries/tools rather than relying solely on RAG.
+27. 40. RAG vs Structured Data
+Information type
+Suitable approach
+Examples
+Unstructured knowledge
+RAG
+FAQs, policies, store information, descriptions.
+Structured transactional data
+Database/tool
+Price, stock, SKU, inventory, order status.
+Conversation history
+Conversation database
+User messages and assistant messages.
+Project documentation
+RAG
+Architecture and implementation documentation.
+
+28. 41. Future Retail AI Tools
+Once the basic RAG system is stable, the assistant can be expanded with tools that retrieve live or structured information. Candidate operations discussed for the architecture include:
+search_products()
+check_inventory()
+get_price()
+get_offers()
+find_store_location()
+calculate_cart_total()
+This creates a hybrid architecture: RAG supplies document knowledge while tools and databases supply dynamic business data.
+29. 42. Conversation Storage: Planned Design
+Conversation history should not automatically be mixed into the store's knowledge documents. A separate conversation model is cleaner.
+conversations
+----------------
+id
+user_id
+created_at
+
+messages
+----------------
+id
+conversation_id
+role
+content
+created_at
+The React frontend can send a conversation_id with each message. FastAPI can then save the user message, run retrieval/generation, save the assistant message, and return the answer.
+30. 43. Recommended Development Sequence
+31. Keep the current basic RAG pipeline stable.
+32. Persist document embeddings so ingestion is separate from query-time retrieval.
+33. Expose RAG through FastAPI.
+34. Connect the React chat interface.
+35. Add conversation IDs and conversation storage.
+36. Introduce PostgreSQL for structured data and conversation history.
+37. Add metadata and document categories to the vector store.
+38. Improve chunking and retrieval for larger document collections.
+39. Add reranking if retrieval quality requires it.
+40. Add structured product/inventory tools.
+41. Add authentication and authorization if the application becomes multi-user.
+42. Replace the learning JSON vector store with a production vector database when scale requires it.
+43. 44. Troubleshooting Notes
+Chroma compatibility
+The project initially explored Chroma for vector storage but encountered compatibility/native-module issues in the Python 3.14 environment, including an hnswlib-related error. The project therefore used NumPy and a simple persistent JSON vector store to learn the mechanics without blocking progress.
+Python version
+The local environment uses Python 3.14. The project avoided forcing a Python downgrade and instead used the manual vector-search approach for the learning stage.
+Gemini transient 503
+A temporary embedding service error occurred. Retry logic was introduced so transient failures can be retried.
+FastAPI CORS 405
+The React browser first generated OPTIONS /chat and received 405. CORS middleware was then configured for localhost:5173 and 127.0.0.1:5173, after which the React request succeeded.
+PowerShell npm execution policy
+PowerShell blocked npm.ps1. npm.cmd was used instead, avoiding the need to change the machine's execution policy.
+44. 45. Key Concepts Learned
+An LLM generates language, but RAG supplies external application-specific context.
+Embeddings represent text numerically for semantic comparison.
+Chunking makes documents searchable at a useful granularity.
+Cosine similarity can rank chunks by semantic relevance.
+Persistent embeddings avoid recomputing document embeddings for every question.
+FastAPI turns Python AI logic into an HTTP service.
+React provides the user-facing chat interface.
+CORS controls browser access between different frontend/backend origins.
+Source metadata can be returned separately from the generated answer.
+RAG is best combined with structured databases/tools for dynamic retail information.
+45. 46. Final Current Architecture
+                ┌──────────────────────────┐
+                │       React / Vite       │
+                │                          │
+                │   Retail AI Chat UI      │
+                └────────────┬─────────────┘
+                             │
+                             │ POST /chat
+                             ▼
+                ┌──────────────────────────┐
+                │         FastAPI          │
+                │                          │
+                │       api/routes.py      │
+                └────────────┬─────────────┘
+                             │
+                             ▼
+                ┌──────────────────────────┐
+                │      RAG Pipeline        │
+                │                          │
+                │    rag_pipeline.py       │
+                └───────┬─────────┬────────┘
+                        │         │
+             ┌──────────┘         └─────────────┐
+             ▼                                  ▼
+  ┌─────────────────────┐            ┌─────────────────────┐
+  │ Persistent Vectors  │            │ Gemini Embeddings   │
+  │                     │            │                     │
+  │ vector_store/       │            │ Query embedding     │
+  │ store.json          │            │                     │
+  └──────────┬──────────┘            └──────────┬──────────┘
+             │                                  │
+             └──────────────┬───────────────────┘
+                            ▼
+                    Cosine Similarity
+                            │
+                            ▼
+                    Top Relevant Chunks
+                            │
+                            ▼
+                       Gemini LLM
+                            │
+                            ▼
+                 Answer + Source Metadata
+                            │
+                            ▼
+                       React UI
+46. 47. Conclusion
+The Retail AI Helper has progressed from a standalone Gemini API experiment into a working end-to-end RAG application. The implementation now has document ingestion, chunking, embeddings, semantic retrieval, persistent vector storage, Gemini answer generation, a FastAPI backend, and a React chat interface.
+The most important architectural separation is now established: ingestion prepares and persists knowledge; query-time RAG retrieves relevant knowledge; Gemini generates the grounded response; FastAPI exposes the capability; and React provides the user interface. Future production work can add conversation persistence, structured product data, live inventory tools, better vector storage, authentication, and improved retrieval.
+47. 48. Quick Reference: Commands
+# Build/update the persistent vector store
+python -m ingestion.build_vector_store
+
+# Test RAG directly
+python -m rag.test_rag
+
+# Start FastAPI
+python -m uvicorn main:app --reload
+
+# Create/start React frontend
+cd retail-ai-ui
+npm.cmd run dev
+48. 49. Quick Reference: URLs
+React development UI: http://localhost:5173/
+FastAPI development server: http://127.0.0.1:8000/
+FastAPI interactive API documentation: http://127.0.0.1:8000/docs
+FastAPI health endpoint: http://127.0.0.1:8000/health
+FastAPI chat endpoint: POST http://127.0.0.1:8000/chat
+
+End of Retail AI Helper Documentation

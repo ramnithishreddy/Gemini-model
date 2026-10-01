@@ -1,0 +1,42 @@
+[
+  {
+    "id": "P001",
+    "name": "Aashirvaad Shudh Chakki Atta",
+    "brand": "Aashirvaad",
+    "category": "Grocery",
+    "price": 285,
+    "unit": "5 kg",
+    "stock": 42,
+    "aisle": "A-12"
+  },
+  {
+    "id": "P002",
+    "name": "India Gate Basmati Rice",
+    "brand": "India Gate",
+    "category": "Grocery",
+    "price": 620,
+    "unit": "5 kg",
+    "stock": 25,
+    "aisle": "A-15"
+  },
+  {
+    "id": "P003",
+    "name": "Surf Excel Matic",
+    "brand": "Surf Excel",
+    "category": "Home Care",
+    "price": 345,
+    "unit": "2 kg",
+    "stock": 18,
+    "aisle": "B-05"
+  },
+  {
+    "id": "P004",
+    "name": "Dove Daily Shine Shampoo",
+    "brand": "Dove",
+    "category": "Personal Care",
+    "price": 210,
+    "unit": "340 ml",
+    "stock": 31,
+    "aisle": "C-08"
+  }
+]
