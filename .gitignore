@@ -1,16 +1,8 @@
-# Environment variables and secrets
 .env
 .env.*
 !.env.example
-
-# Python
 __pycache__/
 *.py[cod]
 .venv/
 venv/
-
-# Generated vector store
 vector_store/store.json
-
-# Local development
-.DS_Store
