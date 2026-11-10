@@ -9,6 +9,10 @@ client = genai.Client(
     api_key=os.environ["GEMINI_API_KEY"]
 )
 
+# Pull the model name from env, with a real Gemini model as the default.
+# The previous hard-coded "gemini-3.6-flash" is not a published model.
+_DEFAULT_MODEL = os.getenv("GEMINI_CHAT_MODEL", "gemini-2.0-flash")
+
 
 def ask_retail_ai(question):
 
@@ -35,7 +39,7 @@ Customer question:
 """
 
     response = client.models.generate_content(
-        model="gemini-3.6-flash",
+        model=_DEFAULT_MODEL,
         contents=prompt
     )
 
